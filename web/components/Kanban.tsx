@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type Project, type TaskItem } from "@/lib/api";
 import { cliAccent } from "@/lib/accents";
 
@@ -16,6 +16,45 @@ export default function Kanban({
   const [desc, setDesc] = useState("");
   const [dragId, setDragId] = useState<string | null>(null);
   const [overCol, setOverCol] = useState<string | null>(null);
+
+  // 드래그 중 보드 가장자리에 가까워지면 자동 가로 스크롤 (먼 컬럼으로 한 번에 이동)
+  const boardRef = useRef<HTMLDivElement | null>(null);
+  const scrollVel = useRef(0);
+  const rafId = useRef<number | null>(null);
+
+  const stopAutoScroll = useCallback(() => {
+    if (rafId.current !== null) cancelAnimationFrame(rafId.current);
+    rafId.current = null;
+    scrollVel.current = 0;
+  }, []);
+
+  const startAutoScroll = useCallback(() => {
+    if (rafId.current !== null) return;
+    const step = () => {
+      const el = boardRef.current;
+      if (el && scrollVel.current !== 0) el.scrollLeft += scrollVel.current;
+      rafId.current = requestAnimationFrame(step);
+    };
+    rafId.current = requestAnimationFrame(step);
+  }, []);
+
+  useEffect(() => stopAutoScroll, [stopAutoScroll]);
+
+  function onBoardDragOver(e: React.DragEvent) {
+    e.preventDefault();
+    const el = boardRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const EDGE = 120; // 가장자리 감지 폭(px)
+    const MAX = 22; // 프레임당 최대 스크롤(px)
+    if (e.clientX < rect.left + EDGE) {
+      scrollVel.current = -Math.ceil(((rect.left + EDGE - e.clientX) / EDGE) * MAX);
+    } else if (e.clientX > rect.right - EDGE) {
+      scrollVel.current = Math.ceil(((e.clientX - (rect.right - EDGE)) / EDGE) * MAX);
+    } else {
+      scrollVel.current = 0;
+    }
+  }
 
   const load = useCallback(() => {
     api.listTasks(project.id).then(setTasks).catch(() => {});
@@ -42,6 +81,7 @@ export default function Kanban({
 
   async function onDrop(column: string) {
     setOverCol(null);
+    stopAutoScroll();
     if (!dragId) return;
     const task = tasks.find((t) => t.id === dragId);
     setDragId(null);
@@ -118,7 +158,11 @@ export default function Kanban({
         카드를 에이전트 컬럼으로 드래그하면 해당 세션에 작업 지시가 자동 주입됩니다.
       </p>
 
-      <div className="flex min-h-0 flex-1 gap-3 overflow-x-auto pb-2">
+      <div
+        ref={boardRef}
+        onDragOver={onBoardDragOver}
+        className="flex min-h-0 flex-1 gap-3 overflow-x-auto pb-2"
+      >
         {columns.map((col) => (
           <div
             key={col.key}
@@ -141,8 +185,14 @@ export default function Kanban({
                 <div
                   key={task.id}
                   draggable
-                  onDragStart={() => setDragId(task.id)}
-                  onDragEnd={() => setDragId(null)}
+                  onDragStart={() => {
+                    setDragId(task.id);
+                    startAutoScroll();
+                  }}
+                  onDragEnd={() => {
+                    setDragId(null);
+                    stopAutoScroll();
+                  }}
                   className="group cursor-grab rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm shadow-sm transition hover:border-zinc-500 active:cursor-grabbing"
                 >
                   <div className="flex items-start justify-between gap-2">
