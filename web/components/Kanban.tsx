@@ -1,8 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, type Project, type TaskItem } from "@/lib/api";
+import { api, type DiffResult, type Project, type TaskItem } from "@/lib/api";
 import { cliAccent } from "@/lib/accents";
+import DiffView from "@/components/DiffView";
 
 export default function Kanban({
   project,
@@ -16,6 +17,8 @@ export default function Kanban({
   const [desc, setDesc] = useState("");
   const [dragId, setDragId] = useState<string | null>(null);
   const [overCol, setOverCol] = useState<string | null>(null);
+  const [arenaSetup, setArenaSetup] = useState<TaskItem | null>(null);
+  const [arenaCompare, setArenaCompare] = useState<TaskItem | null>(null);
 
   // 드래그 중 보드 가장자리에 가까워지면 자동 가로 스크롤 (먼 컬럼으로 한 번에 이동)
   const boardRef = useRef<HTMLDivElement | null>(null);
@@ -125,7 +128,11 @@ export default function Kanban({
       key: s.id,
       title: s.label,
       accent: cliAccent(s.cli),
-      tasks: tasks.filter((t) => t.status === "doing" && t.assignee === s.id),
+      tasks: tasks.filter(
+        (t) =>
+          t.status === "doing" &&
+          (t.assignee === s.id || (t.arena && !t.arena.winner && t.arena.slots.includes(s.id))),
+      ),
     })),
     {
       key: "done",
@@ -197,16 +204,41 @@ export default function Kanban({
                 >
                   <div className="flex items-start justify-between gap-2">
                     <span className={task.status === "done" ? "text-zinc-500 line-through" : ""}>
+                      {task.arena && "🥊 "}
                       {task.title}
                     </span>
-                    <button
-                      onClick={() => onDelete(task)}
-                      className="text-zinc-600 opacity-0 transition group-hover:opacity-100 hover:text-red-400"
-                      title="삭제"
-                    >
-                      ✕
-                    </button>
+                    <span className="flex shrink-0 gap-1">
+                      {task.status === "todo" && !task.arena && (
+                        <button
+                          onClick={() => setArenaSetup(task)}
+                          className="text-zinc-600 opacity-0 transition group-hover:opacity-100 hover:text-amber-300"
+                          title="아레나: 두 에이전트에게 동시에 시키고 승자 채택"
+                        >
+                          🥊
+                        </button>
+                      )}
+                      <button
+                        onClick={() => onDelete(task)}
+                        className="text-zinc-600 opacity-0 transition group-hover:opacity-100 hover:text-red-400"
+                        title="삭제"
+                      >
+                        ✕
+                      </button>
+                    </span>
                   </div>
+                  {task.arena && !task.arena.winner && task.status === "doing" && (
+                    <button
+                      onClick={() => setArenaCompare(task)}
+                      className="mt-2 w-full rounded-md border border-amber-800 bg-amber-950/40 px-2 py-1 text-xs text-amber-300 transition hover:bg-amber-900/50"
+                    >
+                      ⚖️ 결과 비교 · 승자 채택
+                    </button>
+                  )}
+                  {task.arena?.winner && (
+                    <p className="mt-1 text-[10px] text-amber-400">
+                      🏆 {project.slots.find((s) => s.id === task.arena?.winner)?.label ?? task.arena.winner} 승
+                    </p>
+                  )}
                   {task.description && (
                     <p className="mt-1 line-clamp-2 text-xs text-zinc-500">{task.description}</p>
                   )}
@@ -225,6 +257,206 @@ export default function Kanban({
             </div>
           </div>
         ))}
+      </div>
+
+      {arenaSetup && (
+        <ArenaSetupModal
+          project={project}
+          task={arenaSetup}
+          onClose={() => setArenaSetup(null)}
+          onStart={async (slotIds) => {
+            setArenaSetup(null);
+            const labels = slotIds
+              .map((sid) => project.slots.find((s) => s.id === sid)?.label ?? sid)
+              .join(" vs ");
+            showToast(`🥊 아레나 시작: ${labels} — 두 세션에 동시에 디스패치 중…`);
+            try {
+              await api.arenaStart(project.id, arenaSetup.id, slotIds);
+              showToast(`🥊 ${labels} 아레나 진행 중 — 터미널 탭에서 관전하세요.`);
+              load();
+            } catch (e) {
+              showToast(`아레나 시작 실패: ${(e as Error).message}`);
+            }
+          }}
+        />
+      )}
+
+      {arenaCompare && (
+        <ArenaCompareModal
+          project={project}
+          task={arenaCompare}
+          onClose={() => setArenaCompare(null)}
+          showToast={showToast}
+          onDecided={() => {
+            setArenaCompare(null);
+            load();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function ArenaSetupModal({
+  project,
+  task,
+  onClose,
+  onStart,
+}: {
+  project: Project;
+  task: TaskItem;
+  onClose: () => void;
+  onStart: (slotIds: string[]) => void;
+}) {
+  const [picked, setPicked] = useState<string[]>([]);
+  function toggle(id: string) {
+    setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id].slice(-2)));
+  }
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onClose}>
+      <div
+        className="w-[26rem] max-w-[90vw] rounded-xl border border-zinc-700 bg-zinc-900 p-5 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2 className="text-sm font-semibold text-zinc-200">🥊 아레나 — 대결시킬 에이전트 2명 선택</h2>
+        <p className="mt-1 text-xs text-zinc-500">
+          &ldquo;{task.title}&rdquo; 작업을 두 에이전트가 각자 독립적으로 수행합니다. 끝나면 결과를
+          비교해 승자만 병합하세요. (해당 작업만큼 양쪽 사용량이 듭니다)
+        </p>
+        <div className="mt-4 grid grid-cols-2 gap-2">
+          {project.slots.map((s) => (
+            <button
+              key={s.id}
+              onClick={() => toggle(s.id)}
+              className={`rounded-lg border px-3 py-2 text-sm transition ${
+                picked.includes(s.id)
+                  ? `bg-zinc-800 ${cliAccent(s.cli)}`
+                  : "border-zinc-800 text-zinc-400 hover:border-zinc-600"
+              }`}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
+        <div className="mt-4 flex justify-end gap-2">
+          <button onClick={onClose} className="rounded-lg px-3 py-1.5 text-sm text-zinc-400 hover:text-zinc-200">
+            취소
+          </button>
+          <button
+            disabled={picked.length !== 2}
+            onClick={() => onStart(picked)}
+            className="rounded-lg bg-amber-500 px-4 py-1.5 text-sm font-semibold text-zinc-950 transition hover:bg-amber-400 disabled:opacity-40"
+          >
+            대결 시작
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ArenaCompareModal({
+  project,
+  task,
+  onClose,
+  onDecided,
+  showToast,
+}: {
+  project: Project;
+  task: TaskItem;
+  onClose: () => void;
+  onDecided: () => void;
+  showToast: (m: string) => void;
+}) {
+  const slots = (task.arena?.slots ?? [])
+    .map((sid) => project.slots.find((s) => s.id === sid))
+    .filter((s): s is NonNullable<typeof s> => Boolean(s));
+  const [diffs, setDiffs] = useState<Record<string, DiffResult | null>>({});
+  const [resetLoser, setResetLoser] = useState(true);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    for (const s of slots) {
+      api
+        .getDiff(project.id, s.id)
+        .then((d) => setDiffs((prev) => ({ ...prev, [s.id]: d })))
+        .catch(() => setDiffs((prev) => ({ ...prev, [s.id]: null })));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project.id, task.id]);
+
+  async function adopt(slotId: string) {
+    const label = project.slots.find((s) => s.id === slotId)?.label ?? slotId;
+    if (!confirm(`${label}의 결과를 채택해 ${project.baseBranch}에 병합할까요?${resetLoser ? "\n(패자의 작업물은 초기화됩니다)" : ""}`))
+      return;
+    setBusy(true);
+    try {
+      const res = await api.arenaWinner(project.id, task.id, slotId, resetLoser);
+      showToast(res.message);
+      if (res.ok) onDecided();
+    } catch (e) {
+      showToast(`채택 실패: ${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6" onClick={onClose}>
+      <div
+        className="flex max-h-full w-full max-w-6xl flex-col rounded-xl border border-zinc-700 bg-zinc-900 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center gap-3 border-b border-zinc-800 px-5 py-3">
+          <h2 className="text-sm font-semibold">🥊 아레나 결과 비교 — {task.title}</h2>
+          <label className="ml-auto flex items-center gap-1.5 text-xs text-zinc-400">
+            <input type="checkbox" checked={resetLoser} onChange={(e) => setResetLoser(e.target.checked)} />
+            패자 워크트리 초기화
+          </label>
+          <button onClick={onClose} className="text-zinc-500 hover:text-zinc-200">
+            ✕
+          </button>
+        </div>
+        <div className="grid min-h-0 flex-1 grid-cols-2 gap-px overflow-hidden bg-zinc-800">
+          {slots.map((s) => {
+            const d = diffs[s.id];
+            return (
+              <div key={s.id} className="flex min-h-0 flex-col bg-zinc-900">
+                <div className="flex items-center gap-2 border-b border-zinc-800 px-4 py-2">
+                  <span className={`rounded-full border px-2 py-0.5 text-xs ${cliAccent(s.cli)}`}>{s.label}</span>
+                  {d && (
+                    <span className="text-[11px] text-zinc-500">
+                      커밋 {d.aheadCount} · 새 파일 {d.untracked.length}
+                    </span>
+                  )}
+                  <button
+                    onClick={() => adopt(s.id)}
+                    disabled={busy}
+                    className="ml-auto rounded-md bg-emerald-500 px-3 py-1 text-xs font-semibold text-zinc-950 transition hover:bg-emerald-400 disabled:opacity-40"
+                  >
+                    🏆 이쪽 채택
+                  </button>
+                </div>
+                <div className="min-h-0 flex-1 overflow-y-auto p-3">
+                  {d === undefined ? (
+                    <p className="text-xs text-zinc-500">diff 불러오는 중…</p>
+                  ) : d === null ? (
+                    <p className="text-xs text-red-400">diff 로드 실패</p>
+                  ) : (
+                    <>
+                      {d.untracked.length > 0 && (
+                        <p className="mb-2 font-mono text-xs text-emerald-400">
+                          {d.untracked.map((f) => `+ ${f}`).join("  ")}
+                        </p>
+                      )}
+                      <DiffView text={d.diff} />
+                    </>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </div>
     </div>
   );

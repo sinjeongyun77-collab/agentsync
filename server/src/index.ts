@@ -3,7 +3,7 @@ import cors from '@fastify/cors';
 import websocket from '@fastify/websocket';
 import crypto from 'node:crypto';
 import { store } from './store.js';
-import { addSlot, createProjectFromRepo, getDiff, mergeSlotBranch, writeMcpConfig, GitError } from './gitService.js';
+import { addSlot, createProjectFromRepo, getDiff, mergeSlotBranch, resetSlotWorktree, writeMcpConfig, GitError } from './gitService.js';
 import { ensureSession, killProjectSessions, killSession, resizeSession, writeToSession } from './sessionManager.js';
 import { injectPrompt, performHandoff } from './handoff.js';
 import { MAX_SLOTS, type Project, type Slot, type TaskStatus } from './types.js';
@@ -198,6 +198,72 @@ app.post<{ Params: { id: string; taskId: string }; Body: { slotId?: string } }>(
     const prompt = `[AgentSync 작업 카드] "${task.title}"${desc}${rolePart} — 이 작업을 진행해줘. 완료하면 결과를 요약해줘.`;
     const injected = await injectPrompt(project, slot, prompt);
     return { task, injected };
+  },
+);
+
+/** 아레나 시작: 같은 작업을 두 슬롯에 동시에 디스패치 */
+app.post<{ Params: { id: string; taskId: string }; Body: { slotIds?: string[] } }>(
+  '/api/projects/:id/tasks/:taskId/arena',
+  async (req, reply) => {
+    const project = store.getProject(req.params.id);
+    const task = store.getTask(req.params.taskId);
+    if (!project || !task || task.projectId !== project.id) {
+      return reply.code(404).send({ error: '태스크를 찾을 수 없습니다.' });
+    }
+    const slotIds = [...new Set(req.body?.slotIds ?? [])];
+    const slots = slotIds.map((sid) => findSlot(project, sid)).filter((s): s is Slot => Boolean(s));
+    if (slots.length !== 2) return reply.code(400).send({ error: '서로 다른 슬롯 2개가 필요합니다.' });
+
+    task.arena = { slots: slots.map((s) => s.id) };
+    task.assignee = null;
+    task.status = 'doing';
+    task.dispatchedAt = new Date().toISOString();
+    store.persistNow();
+
+    const desc = task.description ? ` 상세: ${task.description}` : '';
+    const results: boolean[] = [];
+    for (const slot of slots) {
+      const prompt = `[AgentSync 아레나] "${task.title}"${desc} — 다른 에이전트도 같은 작업을 독립적으로 수행 중이야. 상의 없이 너만의 최선의 구현을 해줘. 완료하면 결과를 요약해줘.`;
+      results.push(await injectPrompt(project, slot, prompt));
+    }
+    return { task, injected: results };
+  },
+);
+
+/** 아레나 승자 채택: 승자 브랜치 병합, 패자 워크트리는 선택적으로 초기화 */
+app.post<{ Params: { id: string; taskId: string }; Body: { slotId?: string; resetLoser?: boolean } }>(
+  '/api/projects/:id/tasks/:taskId/arena/winner',
+  async (req, reply) => {
+    const project = store.getProject(req.params.id);
+    const task = store.getTask(req.params.taskId);
+    if (!project || !task || task.projectId !== project.id || !task.arena) {
+      return reply.code(404).send({ error: '아레나 태스크를 찾을 수 없습니다.' });
+    }
+    const winner = req.body?.slotId ? findSlot(project, req.body.slotId) : undefined;
+    if (!winner || !task.arena.slots.includes(winner.id)) {
+      return reply.code(400).send({ error: '승자는 아레나 참가 슬롯이어야 합니다.' });
+    }
+    try {
+      const merge = await mergeSlotBranch(project, winner);
+      if (!merge.ok) return { ok: false, message: merge.message };
+
+      let loserReset = false;
+      if (req.body?.resetLoser) {
+        const loserId = task.arena.slots.find((sid) => sid !== winner.id);
+        const loser = loserId ? findSlot(project, loserId) : undefined;
+        if (loser) {
+          await resetSlotWorktree(project, loser);
+          loserReset = true;
+        }
+      }
+      task.arena.winner = winner.id;
+      task.assignee = winner.id;
+      task.status = 'done';
+      store.persistNow();
+      return { ok: true, message: `${winner.label} 채택 — ${merge.message}${loserReset ? ' · 패자 워크트리 초기화됨' : ''}` };
+    } catch (e) {
+      return handleGitError(e, reply);
+    }
   },
 );
 

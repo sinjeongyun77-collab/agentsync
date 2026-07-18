@@ -45,6 +45,8 @@ export interface TaskItem {
   status: TaskStatus;
   createdAt: string;
   dispatchedAt?: string;
+  /** 아레나 모드: 같은 작업을 여러 슬롯에 동시에 시키고 승자를 채택 */
+  arena?: { slots: string[]; winner?: string };
 }
 
 /** 에이전트들이 MCP로 공유하는 팀 노트 */

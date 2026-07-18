@@ -206,6 +206,20 @@ export async function mergeSlotBranch(project: Project, slot: Slot): Promise<Mer
   }
 }
 
+/**
+ * 아레나 패자 정리용: 워크트리를 base 브랜치 상태로 완전 초기화.
+ * (커밋·미커밋 변경 모두 폐기 — 호출 전 사용자 확인 필수)
+ */
+export async function resetSlotWorktree(project: Project, slot: Slot): Promise<void> {
+  const wt = slot.worktree;
+  await git(wt.path, 'reset', '--hard', project.baseBranch);
+  await git(wt.path, 'clean', '-fd');
+  // clean이 지웠을 수 있는 플랫폼 공유 파일 복구
+  linkSharedFile(project.repoPath, wt.path, 'AGENTS.md');
+  linkSharedFile(project.repoPath, wt.path, 'CLAUDE.md');
+  writeMcpConfig(wt.path);
+}
+
 /** base 대비 변경·추가된 md 파일 — 핸드오프로 전달할 문서 후보 */
 export async function changedDocs(project: Project, slot: Slot): Promise<string[]> {
   const wt = slot.worktree;

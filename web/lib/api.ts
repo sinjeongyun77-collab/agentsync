@@ -49,6 +49,7 @@ export interface TaskItem {
   status: TaskStatus;
   createdAt: string;
   dispatchedAt?: string;
+  arena?: { slots: string[]; winner?: string };
 }
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
@@ -98,6 +99,16 @@ export const api = {
     req<{ task: TaskItem; injected: boolean }>(`/api/projects/${id}/tasks/${taskId}/dispatch`, {
       method: "POST",
       body: JSON.stringify({ slotId }),
+    }),
+  arenaStart: (id: string, taskId: string, slotIds: string[]) =>
+    req<{ task: TaskItem; injected: boolean[] }>(`/api/projects/${id}/tasks/${taskId}/arena`, {
+      method: "POST",
+      body: JSON.stringify({ slotIds }),
+    }),
+  arenaWinner: (id: string, taskId: string, slotId: string, resetLoser: boolean) =>
+    req<{ ok: boolean; message: string }>(`/api/projects/${id}/tasks/${taskId}/arena/winner`, {
+      method: "POST",
+      body: JSON.stringify({ slotId, resetLoser }),
     }),
   updateTask: (id: string, taskId: string, patch: Partial<Pick<TaskItem, "status" | "title" | "description" | "assignee">>) =>
     req<TaskItem>(`/api/projects/${id}/tasks/${taskId}`, { method: "PATCH", body: JSON.stringify(patch) }),
