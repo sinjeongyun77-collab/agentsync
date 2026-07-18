@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { spawn } from 'node:child_process';
 import type { HandoffRecord, Project, Slot } from './types.js';
 import { changedDocs } from './gitService.js';
 import { ensureSession, writeToSession } from './sessionManager.js';
@@ -96,13 +97,56 @@ function extractSummary(slot: Slot): string {
   return '';
 }
 
+const SUMMARIZE_PROMPT =
+  '다른 AI 코딩 에이전트에게 이 세션의 작업을 인수인계해야 해. 지금까지 한 작업, 만들거나 수정한 파일, 남은 할 일, 주의사항을 마크다운으로 간결하게 요약해줘. 인사말 없이 요약 본문만 출력해.';
+
+/**
+ * Claude 슬롯 전용 고품질 요약: 최신 세션을 `claude -p --resume`으로 재개해
+ * 인수인계 요약을 생성. 프롬프트는 stdin으로 넘겨 cmd.exe 인용 문제를 회피.
+ */
+function summarizeClaudeSession(worktreePath: string): Promise<string> {
+  const files = newestFiles(claudeProjectDir(worktreePath), '.jsonl', 1);
+  if (!files.length) return Promise.resolve('');
+  const sessionId = path.basename(files[0], '.jsonl');
+
+  return new Promise((resolve) => {
+    const proc = spawn('cmd.exe', ['/c', 'claude', '-p', '--resume', sessionId], {
+      cwd: worktreePath,
+      windowsHide: true,
+    });
+    let out = '';
+    const timer = setTimeout(() => {
+      proc.kill();
+      resolve('');
+    }, 90_000);
+    proc.stdout.on('data', (d: Buffer) => (out += d.toString('utf8')));
+    proc.on('error', () => {
+      clearTimeout(timer);
+      resolve('');
+    });
+    proc.on('close', (code) => {
+      clearTimeout(timer);
+      resolve(code === 0 ? out.trim().slice(0, MAX_SUMMARY_CHARS) : '');
+    });
+    proc.stdin.write(SUMMARIZE_PROMPT, 'utf8');
+    proc.stdin.end();
+  });
+}
+
 export interface HandoffResult {
   record: HandoffRecord;
   injected: boolean;
 }
 
 export async function performHandoff(project: Project, from: Slot, to: Slot): Promise<HandoffResult> {
-  const summary = extractSummary(from);
+  // Claude 슬롯은 세션 재개로 진짜 요약 생성, 실패하면 원문 발췌로 폴백
+  let summary = '';
+  let aiSummary = false;
+  if (from.cli === 'claude' && process.env.AGENTSYNC_SUMMARIZE !== 'off') {
+    summary = await summarizeClaudeSession(from.worktree.path);
+    aiSummary = Boolean(summary);
+  }
+  if (!summary) summary = extractSummary(from);
 
   const docs = await changedDocs(project, from);
   const copied: string[] = [];
@@ -123,7 +167,9 @@ export async function performHandoff(project: Project, from: Slot, to: Slot): Pr
     '',
     copied.length ? `## 전달된 문서\n${copied.map((d) => `- ${d}`).join('\n')}` : '',
     '',
-    `## ${from.label} 세션의 최근 작업 내용`,
+    aiSummary
+      ? `## ${from.label} 세션의 인수인계 요약 (AI 생성)`
+      : `## ${from.label} 세션의 최근 작업 내용 (원문 발췌)`,
     '',
     summary || '(세션 기록을 찾지 못했습니다 — 전달된 문서를 참고하세요)',
     '',

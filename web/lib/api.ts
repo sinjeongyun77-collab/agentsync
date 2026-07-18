@@ -53,7 +53,8 @@ export interface TaskItem {
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: { "Content-Type": "application/json" },
+    // body 없는 요청(DELETE 등)에 JSON 헤더를 붙이면 Fastify가 빈 body를 400으로 거부한다
+    headers: init?.body ? { "Content-Type": "application/json" } : undefined,
     ...init,
   });
   const body = await res.json().catch(() => ({}));
