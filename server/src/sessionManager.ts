@@ -47,9 +47,16 @@ export function ensureSession(project: Project, slot: Slot, cols = 120, rows = 3
     session.buffer = (session.buffer + data).slice(-MAX_BUFFER);
     for (const l of session.listeners) l(data);
   });
+  const startedAt = Date.now();
   proc.onExit(({ exitCode }) => {
     session.exited = true;
-    const msg = `\r\n\x1b[33m[AgentSync] 세션이 종료되었습니다 (exit ${exitCode}). 새로고침하면 다시 시작합니다.\x1b[0m\r\n`;
+    // 몇 초 안에 죽었다면 십중팔구 CLI 미설치/명령 오류
+    const quickExit = Date.now() - startedAt < 7000 && exitCode !== 0;
+    const hint = quickExit
+      ? `\r\n\x1b[31m[AgentSync] '${slotCommand(slot)}' 실행에 실패했습니다. CLI가 설치돼 있는지 확인하세요.\x1b[0m` +
+        `\r\n\x1b[33m  Gemini: npm install -g @google/gemini-cli · Qwen: npm install -g @qwen-code/qwen-code\x1b[0m`
+      : '';
+    const msg = `${hint}\r\n\x1b[33m[AgentSync] 세션이 종료되었습니다 (exit ${exitCode}). 새로고침하면 다시 시작합니다.\x1b[0m\r\n`;
     session.buffer += msg;
     for (const l of session.listeners) l(msg);
   });
@@ -61,19 +68,35 @@ export function ensureSession(project: Project, slot: Slot, cols = 120, rows = 3
 export function writeToSession(projectId: string, slotId: string, data: string): boolean {
   const s = getSession(projectId, slotId);
   if (!s) return false;
-  s.proc.write(data);
-  return true;
+  try {
+    s.proc.write(data);
+    return true;
+  } catch {
+    return false; // pty가 방금 종료된 레이스 — 서버는 계속 살아야 한다
+  }
 }
 
 export function resizeSession(projectId: string, slotId: string, cols: number, rows: number) {
   const s = getSession(projectId, slotId);
-  if (s && cols > 0 && rows > 0) s.proc.resize(cols, rows);
+  if (s && cols > 0 && rows > 0) {
+    try {
+      s.proc.resize(cols, rows);
+    } catch {
+      /* pty가 방금 종료된 레이스 — 무시 */
+    }
+  }
 }
 
 export function killSession(projectId: string, slotId: string) {
   const key = sessionKey(projectId, slotId);
   const s = sessions.get(key);
-  if (s && !s.exited) s.proc.kill();
+  if (s && !s.exited) {
+    try {
+      s.proc.kill();
+    } catch {
+      /* 이미 종료된 pty — 무시 */
+    }
+  }
   sessions.delete(key);
 }
 

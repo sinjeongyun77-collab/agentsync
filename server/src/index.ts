@@ -270,6 +270,10 @@ app.get<{ Querystring: { projectId?: string; slot?: string; cols?: string; rows?
   },
 );
 
+// pty 등 네이티브 콜백의 예외로 서버 전체가 죽는 것을 방지
+process.on('uncaughtException', (e) => app.log.error({ err: e }, 'uncaughtException'));
+process.on('unhandledRejection', (e) => app.log.error({ err: e }, 'unhandledRejection'));
+
 app.listen({ port: PORT, host: '127.0.0.1' }).then(() => {
   console.log(`AgentSync server: http://localhost:${PORT}`);
 });
