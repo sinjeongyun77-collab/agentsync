@@ -1,5 +1,7 @@
 # AgentSync — AI 코딩 에이전트 협업 플랫폼 (로컬 MVP)
 
+> Orchestrate a *team* of AI coding agents (Claude Code, Codex, Gemini, Qwen) in one browser — isolated git worktrees, kanban dispatch, automatic handoffs. Korean-first, BYOK, free to self-host.
+
 여러 AI 코딩 에이전트(Claude Code, Codex, Gemini, Qwen, …)를 한 브라우저에서 격리된 git worktree로 돌리고, 칸반과 핸드오프로 지휘하는 오케스트레이션 플랫폼입니다. AI 사용량은 각자 본인 계정(BYOK) — 이 도구는 지휘 레이어만 제공합니다.
 
 - **에이전트 슬롯 (최대 4개)**: 슬롯마다 CLI를 자유 선택. 같은 CLI 두 개(Claude×Claude)도, 무료 CLI 조합도 가능
@@ -33,9 +35,13 @@
 
 MCP 서버는 실행 위치(cwd)로 자신이 어느 프로젝트/슬롯인지 자동 인식하므로 등록은 전역 1회면 됩니다. (메인 서버 4310이 켜져 있어야 함)
 
-## 클라우드판 (설계 단계)
+## 클라우드판 (준비 중)
 
-`docs/CLOUD_DESIGN.md` 참고 — 1사용자=1컨테이너, 클라우드는 API 키 연결 기본(약관 리스크 회피), Toss 정기결제. 컨테이너 이미지는 `infra/Dockerfile.agent`.
+설치 없이 쓰는 클라우드 호스팅 버전을 준비하고 있습니다. 관심 있으면 이 리포를 Watch 해주세요. 컨테이너 이미지 예시는 `infra/Dockerfile.agent`.
+
+## 라이선스
+
+AGPL-3.0 — 개인·사내 사용은 자유입니다. 이 코드를 수정해 서비스로 제공하는 경우 소스 공개 의무가 있습니다.
 
 ## 실행
 
