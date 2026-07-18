@@ -20,17 +20,22 @@ const CLI_OPTIONS = [
   { value: "custom", label: "커스텀 명령… (opencode, aider 등)" },
 ];
 
-function RoleSelect({ value, onChange }: { value: string; onChange: (role: string) => void }) {
+function RoleSelect({
+  value,
+  onChange,
+  onCustomRequest,
+}: {
+  value: string;
+  onChange: (role: string) => void;
+  onCustomRequest: () => void;
+}) {
   return (
     <select
       value={ROLE_PRESETS.includes(value) ? value : CUSTOM_ROLE}
       onChange={(e) => {
-        if (e.target.value === CUSTOM_ROLE) {
-          const custom = prompt("이 에이전트의 역할을 입력하세요 (예: 프론트 코딩, DB 설계)", value);
-          if (custom?.trim()) onChange(custom.trim());
-        } else {
-          onChange(e.target.value);
-        }
+        // prompt()는 임베디드 브라우저에서 차단되므로 자체 모달 사용
+        if (e.target.value === CUSTOM_ROLE) onCustomRequest();
+        else onChange(e.target.value);
       }}
       className="rounded-md border border-zinc-700 bg-zinc-900 px-1.5 py-0.5 text-xs text-zinc-300 outline-none hover:border-zinc-500"
       title="역할은 자유롭게 바꿀 수 있습니다"
@@ -54,6 +59,12 @@ export default function ProjectPage() {
   const [tab, setTab] = useState<"terminals" | "kanban" | "diff">("terminals");
   const [toast, setToast] = useState("");
   const [busy, setBusy] = useState(false);
+  const [textModal, setTextModal] = useState<{
+    title: string;
+    placeholder: string;
+    initial: string;
+    onSubmit: (value: string) => void;
+  } | null>(null);
 
   const refresh = useCallback(() => {
     return api
@@ -104,14 +115,7 @@ export default function ProjectPage() {
     }
   }
 
-  async function onAddSlot(cli: string) {
-    if (!cli) return;
-    let command: string | undefined;
-    if (cli === "custom") {
-      const c = prompt("실행할 명령을 입력하세요 (예: opencode, powershell)");
-      if (!c?.trim()) return;
-      command = c.trim();
-    }
+  async function doAddSlot(cli: string, command?: string) {
     setBusy(true);
     try {
       await api.addSlot(id, cli, command);
@@ -122,6 +126,20 @@ export default function ProjectPage() {
     } finally {
       setBusy(false);
     }
+  }
+
+  function onAddSlot(cli: string) {
+    if (!cli) return;
+    if (cli === "custom") {
+      setTextModal({
+        title: "실행할 명령을 입력하세요",
+        placeholder: "예: opencode, aider, powershell",
+        initial: "",
+        onSubmit: (v) => doAddSlot("custom", v),
+      });
+      return;
+    }
+    void doAddSlot(cli);
   }
 
   async function onRemoveSlot(slot: Slot) {
@@ -190,7 +208,18 @@ export default function ProjectPage() {
                 <span className={`rounded-full border px-2 py-0.5 text-xs ${cliAccent(slot.cli)}`}>
                   {slot.label}
                 </span>
-                <RoleSelect value={slot.role} onChange={(role) => onRoleChange(slot, role)} />
+                <RoleSelect
+                  value={slot.role}
+                  onChange={(role) => onRoleChange(slot, role)}
+                  onCustomRequest={() =>
+                    setTextModal({
+                      title: `${slot.label}의 역할을 입력하세요`,
+                      placeholder: "예: 프론트 코딩, DB 설계",
+                      initial: ROLE_PRESETS.includes(slot.role) ? "" : slot.role,
+                      onSubmit: (v) => onRoleChange(slot, v),
+                    })
+                  }
+                />
                 <span className="truncate text-[11px] text-zinc-600">{slot.worktree.branch}</span>
                 <div className="ml-auto flex items-center gap-1.5">
                   {others.length === 1 ? (
@@ -254,7 +283,76 @@ export default function ProjectPage() {
 
       {tab === "kanban" && <Kanban project={project} showToast={showToast} />}
       {tab === "diff" && <DiffTab project={project} showToast={showToast} />}
+
+      {textModal && (
+        <TextInputModal
+          title={textModal.title}
+          placeholder={textModal.placeholder}
+          initial={textModal.initial}
+          onCancel={() => setTextModal(null)}
+          onSubmit={(v) => {
+            setTextModal(null);
+            if (v.trim()) textModal.onSubmit(v.trim());
+          }}
+        />
+      )}
     </main>
+  );
+}
+
+/** prompt() 대체 — 임베디드 브라우저에서도 동작하는 자체 입력 모달 */
+function TextInputModal({
+  title,
+  placeholder,
+  initial,
+  onSubmit,
+  onCancel,
+}: {
+  title: string;
+  placeholder: string;
+  initial: string;
+  onSubmit: (value: string) => void;
+  onCancel: () => void;
+}) {
+  const [value, setValue] = useState(initial);
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onCancel}>
+      <div
+        className="w-96 max-w-[90vw] rounded-xl border border-zinc-700 bg-zinc-900 p-5 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2 className="mb-3 text-sm font-semibold text-zinc-200">{title}</h2>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            onSubmit(value);
+          }}
+        >
+          <input
+            autoFocus
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            placeholder={placeholder}
+            className="w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm outline-none placeholder:text-zinc-600 focus:border-emerald-500"
+          />
+          <div className="mt-4 flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={onCancel}
+              className="rounded-lg px-3 py-1.5 text-sm text-zinc-400 transition hover:text-zinc-200"
+            >
+              취소
+            </button>
+            <button
+              type="submit"
+              className="rounded-lg bg-emerald-500 px-4 py-1.5 text-sm font-semibold text-zinc-950 transition hover:bg-emerald-400"
+            >
+              확인
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
   );
 }
 
