@@ -1,0 +1,23 @@
+# P0 클로즈드 베타용 예시 — 사용자 1명당 서비스 1개를 수동 추가
+# 사용: docker compose -f infra/docker-compose.example.yml up -d
+services:
+  user-demo:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.agent
+    container_name: agentsync-user-demo
+    environment:
+      - ANTHROPIC_API_KEY=${DEMO_ANTHROPIC_KEY}
+      - OPENAI_API_KEY=${DEMO_OPENAI_KEY}
+    volumes:
+      - user-demo-data:/data
+    ports:
+      - "127.0.0.1:14310:4310" # Gateway/리버스프록시만 접근
+    mem_limit: 2g
+    cpus: 2
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+volumes:
+  user-demo-data:

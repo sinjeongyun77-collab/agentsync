@@ -47,6 +47,15 @@ export interface TaskItem {
   dispatchedAt?: string;
 }
 
+/** 에이전트들이 MCP로 공유하는 팀 노트 */
+export interface NoteItem {
+  id: string;
+  projectId: string;
+  author: string; // slot label 또는 'user'
+  text: string;
+  createdAt: string;
+}
+
 export const MAX_SLOTS = 4;
 
 export const CLI_PRESETS: Record<string, { label: string; command: string }> = {

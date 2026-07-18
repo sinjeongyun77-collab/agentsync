@@ -1,15 +1,17 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { CLI_PRESETS, type HandoffRecord, type Project, type Slot, type TaskItem } from './types.js';
+import { CLI_PRESETS, type HandoffRecord, type NoteItem, type Project, type Slot, type TaskItem } from './types.js';
 
-const dataDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'data');
+const dataDir =
+  process.env.AGENTSYNC_DATA_DIR || path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'data');
 const dataFile = path.join(dataDir, 'store.json');
 
 interface StoreShape {
   projects: Project[];
   handoffs: HandoffRecord[];
   tasks: TaskItem[];
+  notes: NoteItem[];
 }
 
 /** v1 스키마(고정 claude/codex worktrees + roles) → 슬롯 배열로 마이그레이션 */
@@ -39,9 +41,10 @@ function load(): StoreShape {
     raw.projects = (raw.projects ?? []).map((p) => migrateProject(p as unknown as Record<string, unknown>));
     raw.handoffs = raw.handoffs ?? [];
     raw.tasks = raw.tasks ?? [];
+    raw.notes = raw.notes ?? [];
     return raw;
   } catch {
-    return { projects: [], handoffs: [], tasks: [] };
+    return { projects: [], handoffs: [], tasks: [], notes: [] };
   }
 }
 
@@ -88,6 +91,19 @@ export const store = {
   },
   removeTask(id: string) {
     state.tasks = state.tasks.filter((t) => t.id !== id);
+    persist();
+  },
+  listNotes(projectId: string): NoteItem[] {
+    return state.notes.filter((n) => n.projectId === projectId);
+  },
+  addNote(n: NoteItem) {
+    state.notes.push(n);
+    // 프로젝트당 최근 200개만 유지
+    const mine = state.notes.filter((x) => x.projectId === n.projectId);
+    if (mine.length > 200) {
+      const cutoff = mine[mine.length - 200].createdAt;
+      state.notes = state.notes.filter((x) => x.projectId !== n.projectId || x.createdAt >= cutoff);
+    }
     persist();
   },
   /** 저장된 객체를 직접 수정한 뒤 호출 (슬롯/태스크 편집 등) */

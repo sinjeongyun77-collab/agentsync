@@ -23,6 +23,20 @@
 
 핸드오프 세션 요약 추출은 현재 Claude/Codex만 지원(다른 CLI는 문서 전달만).
 
+## MCP 공유 컨텍스트
+
+모든 에이전트가 `agentsync` MCP 서버로 공유 상태에 접근할 수 있습니다 — 팀 구성 확인(`agentsync_status`), 칸반 조회/완료 보고(`list_tasks`, `update_task_status`), 핸드오프 기록(`list_handoffs`), 팀 노트(`read_team_notes`, `write_team_note`).
+
+- **Claude Code**: 워크트리마다 자동 생성되는 `.mcp.json`으로 즉시 사용 (첫 실행 때 승인 한 번)
+- **Codex**: `codex mcp add agentsync -- node <repo>\server\node_modules\tsx\dist\cli.mjs <repo>\server\src\mcpServer.ts`
+- **Gemini CLI**: `gemini mcp add agentsync node <위와 같은 인자>`
+
+MCP 서버는 실행 위치(cwd)로 자신이 어느 프로젝트/슬롯인지 자동 인식하므로 등록은 전역 1회면 됩니다. (메인 서버 4310이 켜져 있어야 함)
+
+## 클라우드판 (설계 단계)
+
+`docs/CLOUD_DESIGN.md` 참고 — 1사용자=1컨테이너, 클라우드는 API 키 연결 기본(약관 리스크 회피), Toss 정기결제. 컨테이너 이미지는 `infra/Dockerfile.agent`.
+
 ## 실행
 
 ```powershell

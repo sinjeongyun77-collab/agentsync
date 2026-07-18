@@ -3,7 +3,7 @@ import cors from '@fastify/cors';
 import websocket from '@fastify/websocket';
 import crypto from 'node:crypto';
 import { store } from './store.js';
-import { addSlot, createProjectFromRepo, getDiff, mergeSlotBranch, GitError } from './gitService.js';
+import { addSlot, createProjectFromRepo, getDiff, mergeSlotBranch, writeMcpConfig, GitError } from './gitService.js';
 import { ensureSession, killProjectSessions, killSession, resizeSession, writeToSession } from './sessionManager.js';
 import { injectPrompt, performHandoff } from './handoff.js';
 import { MAX_SLOTS, type Project, type Slot, type TaskStatus } from './types.js';
@@ -229,6 +229,31 @@ app.delete<{ Params: { id: string; taskId: string } }>(
   },
 );
 
+// ---------- 팀 노트 (MCP 공유 컨텍스트) ----------
+
+app.get<{ Params: { id: string } }>('/api/projects/:id/notes', async (req) =>
+  store.listNotes(req.params.id).slice(-50),
+);
+
+app.post<{ Params: { id: string }; Body: { author?: string; text?: string } }>(
+  '/api/projects/:id/notes',
+  async (req, reply) => {
+    const project = store.getProject(req.params.id);
+    if (!project) return reply.code(404).send({ error: '프로젝트를 찾을 수 없습니다.' });
+    const text = req.body?.text?.trim();
+    if (!text) return reply.code(400).send({ error: 'text가 필요합니다.' });
+    const note = {
+      id: crypto.randomUUID().slice(0, 8),
+      projectId: project.id,
+      author: (req.body?.author ?? 'user').slice(0, 40),
+      text: text.slice(0, 2000),
+      createdAt: new Date().toISOString(),
+    };
+    store.addNote(note);
+    return note;
+  },
+);
+
 // ---------- 터미널 WebSocket ----------
 
 app.get<{ Querystring: { projectId?: string; slot?: string; cols?: string; rows?: string } }>(
@@ -270,10 +295,21 @@ app.get<{ Querystring: { projectId?: string; slot?: string; cols?: string; rows?
   },
 );
 
+// 기존 워크트리에도 MCP 설정을 보장 (부팅 시 1회, 실패해도 무시)
+for (const p of store.listProjects()) {
+  for (const s of p.slots) {
+    try {
+      writeMcpConfig(s.worktree.path);
+    } catch {
+      /* 워크트리가 지워졌을 수 있음 */
+    }
+  }
+}
+
 // pty 등 네이티브 콜백의 예외로 서버 전체가 죽는 것을 방지
 process.on('uncaughtException', (e) => app.log.error({ err: e }, 'uncaughtException'));
 process.on('unhandledRejection', (e) => app.log.error({ err: e }, 'unhandledRejection'));
 
-app.listen({ port: PORT, host: '127.0.0.1' }).then(() => {
+app.listen({ port: PORT, host: process.env.HOST || '127.0.0.1' }).then(() => {
   console.log(`AgentSync server: http://localhost:${PORT}`);
 });

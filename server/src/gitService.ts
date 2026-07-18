@@ -3,6 +3,7 @@ import { promisify } from 'node:util';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { CLI_PRESETS, type Project, type Slot } from './types.js';
 
 const run = promisify(execFile);
@@ -22,7 +23,30 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
   }
 }
 
-const PLATFORM_FILES = ['agents.md', 'claude.md', 'handoff.md'];
+const PLATFORM_FILES = ['agents.md', 'claude.md', 'handoff.md', '.mcp.json'];
+
+/**
+ * 워크트리에 .mcp.json 생성 — Claude Code가 이 프로젝트에서 agentsync MCP 서버
+ * (공유 태스크/노트)를 쓸 수 있게 한다. cwd 기반으로 슬롯을 자동 인식하므로
+ * 모든 워크트리가 같은 설정을 공유한다.
+ */
+export function writeMcpConfig(wtPath: string) {
+  const serverRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const tsxCli = path.join(serverRoot, 'node_modules', 'tsx', 'dist', 'cli.mjs');
+  const script = path.join(serverRoot, 'src', 'mcpServer.ts');
+  const file = path.join(wtPath, '.mcp.json');
+  let config: { mcpServers?: Record<string, unknown> } = {};
+  try {
+    config = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    /* 새로 생성 */
+  }
+  config.mcpServers = {
+    ...config.mcpServers,
+    agentsync: { command: 'node', args: [tsxCli, script] },
+  };
+  fs.writeFileSync(file, JSON.stringify(config, null, 2), 'utf8');
+}
 
 const AGENTS_MD_TEMPLATE = `# AGENTS.md
 
@@ -67,6 +91,7 @@ export async function addSlot(project: Project, cli: string, command?: string, l
   }
   linkSharedFile(project.repoPath, wtPath, 'AGENTS.md');
   linkSharedFile(project.repoPath, wtPath, 'CLAUDE.md');
+  writeMcpConfig(wtPath);
 
   const slot: Slot = { id, cli, command: cmd, label: finalLabel, role: '자유', worktree: { path: wtPath, branch } };
   project.slots.push(slot);
@@ -133,7 +158,7 @@ export interface DiffResult {
 
 export async function getDiff(project: Project, slot: Slot): Promise<DiffResult> {
   const wt = slot.worktree;
-  const diff = await git(wt.path, 'diff', project.baseBranch, '--', '.', ':!AGENTS.md', ':!CLAUDE.md', ':!HANDOFF.md');
+  const diff = await git(wt.path, 'diff', project.baseBranch, '--', '.', ':!AGENTS.md', ':!CLAUDE.md', ':!HANDOFF.md', ':!.mcp.json');
   const untracked = (await git(wt.path, 'ls-files', '--others', '--exclude-standard'))
     .split('\n')
     .filter((f) => f && !PLATFORM_FILES.includes(path.basename(f).toLowerCase()));
@@ -152,7 +177,7 @@ export async function mergeSlotBranch(project: Project, slot: Slot): Promise<Mer
   const status = (await git(wt.path, 'status', '--porcelain')).trim();
   if (status) {
     // 플랫폼 관리 파일은 에이전트 커밋에서 제외 (하드링크로 공유되므로)
-    await git(wt.path, 'add', '-A', '--', '.', ':!HANDOFF.md', ':!AGENTS.md', ':!CLAUDE.md');
+    await git(wt.path, 'add', '-A', '--', '.', ':!HANDOFF.md', ':!AGENTS.md', ':!CLAUDE.md', ':!.mcp.json');
     const staged = (await git(wt.path, 'diff', '--cached', '--name-only')).trim();
     if (staged) await git(wt.path, 'commit', '-m', `agentsync: ${slot.label} 작업 자동 커밋`);
   }
