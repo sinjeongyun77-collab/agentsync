@@ -205,7 +205,10 @@ export default function ProjectPage() {
           return (
             <section key={slot.id} className="flex min-h-0 min-w-0 flex-col bg-zinc-950">
               <div className="flex items-center gap-2 border-b border-zinc-800 bg-zinc-900/60 px-3 py-1.5">
-                <span className={`rounded-full border px-2 py-0.5 text-xs ${cliAccent(slot.cli)}`}>
+                <span
+                  className={`rounded-full border px-2 py-0.5 text-xs ${cliAccent(slot.cli)}`}
+                  title={`브랜치: ${slot.worktree.branch}`}
+                >
                   {slot.label}
                 </span>
                 <RoleSelect
@@ -220,7 +223,6 @@ export default function ProjectPage() {
                     })
                   }
                 />
-                <span className="truncate text-[11px] text-zinc-600">{slot.worktree.branch}</span>
                 <div className="ml-auto flex items-center gap-1.5">
                   {others.length === 1 ? (
                     <button
