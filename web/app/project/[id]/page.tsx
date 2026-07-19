@@ -9,15 +9,16 @@ import {
   type DiffResult,
   type HandoffRecord,
   type Project,
+  type ReviewComment,
   type SessionContext,
   type Slot,
   type VerifyResult,
 } from "@/lib/api";
 import { cliAccent } from "@/lib/accents";
 import Kanban from "@/components/Kanban";
-import DiffView from "@/components/DiffView";
 import CliInstaller from "@/components/CliInstaller";
 import VerifyPanel from "@/components/VerifyPanel";
+import ReviewableDiff from "@/components/ReviewableDiff";
 
 const Terminal = dynamic(() => import("@/components/Terminal"), { ssr: false });
 
@@ -540,6 +541,8 @@ function DiffTab({ project, showToast }: { project: Project; showToast: (m: stri
   const [verifying, setVerifying] = useState(false);
   const [verifyResult, setVerifyResult] = useState<VerifyResult | null>(null);
   const [showVerifySettings, setShowVerifySettings] = useState(false);
+  const [comments, setComments] = useState<ReviewComment[]>([]);
+  const [sendingReview, setSendingReview] = useState(false);
 
   const load = useCallback(() => {
     if (!slotId) return;
@@ -555,6 +558,24 @@ function DiffTab({ project, showToast }: { project: Project; showToast: (m: stri
   useEffect(load, [load]);
 
   const slot = project.slots.find((s) => s.id === slotId);
+
+  async function onSendReview() {
+    if (!slot || comments.length === 0) return;
+    setSendingReview(true);
+    try {
+      const res = await api.sendReview(project.id, slotId, comments);
+      showToast(
+        res.injected
+          ? `💬 리뷰 ${res.count}건을 ${slot.label}에게 전달했습니다 — 터미널에서 수정 작업을 확인하세요.`
+          : `REVIEW.md는 생성됐지만 세션 전달에 실패했습니다. 터미널에서 직접 확인해 주세요.`,
+      );
+      setComments([]);
+    } catch (e) {
+      showToast(`리뷰 전송 실패: ${(e as Error).message}`);
+    } finally {
+      setSendingReview(false);
+    }
+  }
 
   async function onVerify() {
     if (!slot) return;
@@ -610,7 +631,11 @@ function DiffTab({ project, showToast }: { project: Project; showToast: (m: stri
         {project.slots.map((s) => (
           <button
             key={s.id}
-            onClick={() => setSlotId(s.id)}
+            onClick={() => {
+              setSlotId(s.id);
+              setComments([]);
+              setVerifyResult(null);
+            }}
             className={`rounded-md border px-3 py-1.5 text-sm transition ${
               slotId === s.id
                 ? `bg-zinc-800 ${cliAccent(s.cli)}`
@@ -686,7 +711,37 @@ function DiffTab({ project, showToast }: { project: Project; showToast: (m: stri
               ))}
             </div>
           )}
-          <DiffView text={diff.diff} />
+          <div className="flex items-center gap-2">
+            <p className="text-xs text-zinc-500">
+              💬 코드 줄에 마우스를 올리면 리뷰 코멘트를 남길 수 있습니다
+            </p>
+            {comments.length > 0 && (
+              <>
+                <span className="rounded-full border border-sky-800 bg-sky-950/50 px-2 py-0.5 text-[11px] text-sky-300">
+                  코멘트 {comments.length}건
+                </span>
+                <button
+                  onClick={() => setComments([])}
+                  className="text-[11px] text-zinc-600 hover:text-zinc-300"
+                >
+                  전체 삭제
+                </button>
+                <button
+                  onClick={onSendReview}
+                  disabled={sendingReview}
+                  className="ml-auto rounded-md bg-sky-600 px-3 py-1.5 text-sm font-semibold text-white transition hover:bg-sky-500 disabled:opacity-50"
+                >
+                  {sendingReview ? "전달 중…" : `💬 ${slot?.label}에게 수정 요청`}
+                </button>
+              </>
+            )}
+          </div>
+          <ReviewableDiff
+            text={diff.diff}
+            comments={comments}
+            onAdd={(c) => setComments((prev) => [...prev, c])}
+            onRemove={(i) => setComments((prev) => prev.filter((_, idx) => idx !== i))}
+          />
         </>
       ) : null}
 

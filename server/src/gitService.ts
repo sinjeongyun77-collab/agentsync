@@ -23,7 +23,7 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
   }
 }
 
-const PLATFORM_FILES = ['agents.md', 'claude.md', 'handoff.md', '.mcp.json'];
+const PLATFORM_FILES = ['agents.md', 'claude.md', 'handoff.md', 'review.md', '.mcp.json'];
 
 /**
  * 워크트리에 .mcp.json 생성 — Claude Code가 이 프로젝트에서 agentsync MCP 서버
@@ -158,7 +158,7 @@ export interface DiffResult {
 
 export async function getDiff(project: Project, slot: Slot): Promise<DiffResult> {
   const wt = slot.worktree;
-  const diff = await git(wt.path, 'diff', project.baseBranch, '--', '.', ':!AGENTS.md', ':!CLAUDE.md', ':!HANDOFF.md', ':!.mcp.json');
+  const diff = await git(wt.path, 'diff', project.baseBranch, '--', '.', ':!AGENTS.md', ':!CLAUDE.md', ':!HANDOFF.md', ':!REVIEW.md', ':!.mcp.json');
   const untracked = (await git(wt.path, 'ls-files', '--others', '--exclude-standard'))
     .split('\n')
     .filter((f) => f && !PLATFORM_FILES.includes(path.basename(f).toLowerCase()));
@@ -177,7 +177,7 @@ export async function mergeSlotBranch(project: Project, slot: Slot): Promise<Mer
   const status = (await git(wt.path, 'status', '--porcelain')).trim();
   if (status) {
     // 플랫폼 관리 파일은 에이전트 커밋에서 제외 (하드링크로 공유되므로)
-    await git(wt.path, 'add', '-A', '--', '.', ':!HANDOFF.md', ':!AGENTS.md', ':!CLAUDE.md', ':!.mcp.json');
+    await git(wt.path, 'add', '-A', '--', '.', ':!HANDOFF.md', ':!AGENTS.md', ':!CLAUDE.md', ':!REVIEW.md', ':!.mcp.json');
     const staged = (await git(wt.path, 'diff', '--cached', '--name-only')).trim();
     if (staged) await git(wt.path, 'commit', '-m', `agentsync: ${slot.label} 작업 자동 커밋`);
   }

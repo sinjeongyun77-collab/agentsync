@@ -51,6 +51,15 @@ export interface TaskItem {
   arena?: { slots: string[]; winner?: string };
 }
 
+/** diff 위에 남기는 인라인 리뷰 코멘트 */
+export interface ReviewComment {
+  file: string;
+  line?: number;
+  /** 지적 대상 코드 줄 (diff 원문) */
+  code?: string;
+  text: string;
+}
+
 /** 에이전트들이 MCP로 공유하는 팀 노트 */
 export interface NoteItem {
   id: string;

@@ -39,6 +39,13 @@ export interface SessionContext {
   contextStale: boolean;
 }
 
+export interface ReviewComment {
+  file: string;
+  line?: number;
+  code?: string;
+  text: string;
+}
+
 export interface CheckResult {
   name: string;
   command?: string;
@@ -131,6 +138,12 @@ export const api = {
     req<VerifyResult>(`/api/projects/${id}/verify/${slotId}`, {
       method: "POST",
       body: JSON.stringify({ runChecks }),
+    }),
+
+  sendReview: (id: string, slotId: string, comments: ReviewComment[]) =>
+    req<{ ok: boolean; injected: boolean; count: number }>(`/api/projects/${id}/review/${slotId}`, {
+      method: "POST",
+      body: JSON.stringify({ comments }),
     }),
 
   getDiff: (id: string, slotId: string) => req<DiffResult>(`/api/projects/${id}/diff/${slotId}`),

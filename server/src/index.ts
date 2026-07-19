@@ -17,7 +17,8 @@ import {
 import { installCli, listClis } from './cliManager.js';
 import { suggestVerifyCommands, verifySlot } from './verify.js';
 import { injectPrompt, performHandoff } from './handoff.js';
-import { MAX_SLOTS, type Project, type Slot, type TaskStatus } from './types.js';
+import { sendReview } from './review.js';
+import { MAX_SLOTS, type Project, type ReviewComment, type Slot, type TaskStatus } from './types.js';
 
 const PORT = Number(process.env.PORT) || 4310;
 
@@ -247,6 +248,30 @@ app.post<{ Params: { id: string }; Body: { slotId?: string; skipVerify?: boolean
     }
   },
 );
+
+// ---------- 리뷰 루프 ----------
+
+app.post<{
+  Params: { id: string; slotId: string };
+  Body: { comments?: ReviewComment[] };
+}>('/api/projects/:id/review/:slotId', async (req, reply) => {
+  const project = store.getProject(req.params.id);
+  const slot = project && findSlot(project, req.params.slotId);
+  if (!project || !slot) return reply.code(404).send({ error: '슬롯을 찾을 수 없습니다.' });
+
+  const comments = (req.body?.comments ?? [])
+    .filter((c) => c && typeof c.file === 'string' && typeof c.text === 'string' && c.text.trim())
+    .map((c) => ({
+      file: c.file.slice(0, 300),
+      line: typeof c.line === 'number' ? c.line : undefined,
+      code: typeof c.code === 'string' ? c.code.slice(0, 500) : undefined,
+      text: c.text.trim().slice(0, 2000),
+    }))
+    .slice(0, 50);
+  if (!comments.length) return reply.code(400).send({ error: '리뷰 코멘트가 없습니다.' });
+
+  return await sendReview(project, slot, comments);
+});
 
 // ---------- 핸드오프 ----------
 
