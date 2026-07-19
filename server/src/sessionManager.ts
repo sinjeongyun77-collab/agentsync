@@ -1,5 +1,20 @@
 import pty from '@lydell/node-pty';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import type { Project, Slot } from './types.js';
+
+/** 서버 기동 후 설치된 CLI(예: Kimi)도 찾을 수 있게 알려진 설치 경로를 PATH에 보강 */
+function sessionEnv(): Record<string, string> {
+  const env = { ...process.env } as Record<string, string>;
+  const extraBins = [path.join(os.homedir(), '.kimi-code', 'bin')];
+  const additions = extraBins.filter((p) => fs.existsSync(p) && !(env.Path ?? env.PATH ?? '').includes(p));
+  if (additions.length) {
+    const key = env.Path !== undefined ? 'Path' : 'PATH';
+    env[key] = `${env[key] ?? ''};${additions.join(';')}`;
+  }
+  return env;
+}
 
 export interface AgentSession {
   key: string;
@@ -7,6 +22,19 @@ export interface AgentSession {
   buffer: string;
   listeners: Set<(data: string) => void>;
   exited: boolean;
+  /** 컨텍스트 추적: 이 세션이 시작된 이후 처리한 작업들 */
+  startedAt: number;
+  taskTitles: string[];
+}
+
+export interface SessionContext {
+  slotId: string;
+  running: boolean;
+  startedAt: string | null;
+  taskCount: number;
+  taskTitles: string[];
+  /** 여러 작업이 한 세션에 누적되면 컨텍스트 오염 위험 */
+  contextStale: boolean;
 }
 
 const MAX_BUFFER = 200 * 1024;
@@ -38,10 +66,18 @@ export function ensureSession(project: Project, slot: Slot, cols = 120, rows = 3
     cols,
     rows,
     cwd: slot.worktree.path,
-    env: { ...process.env } as Record<string, string>,
+    env: sessionEnv(),
   });
 
-  const session: AgentSession = { key, proc, buffer: '', listeners: new Set(), exited: false };
+  const session: AgentSession = {
+    key,
+    proc,
+    buffer: '',
+    listeners: new Set(),
+    exited: false,
+    startedAt: Date.now(),
+    taskTitles: [],
+  };
 
   proc.onData((data) => {
     session.buffer = (session.buffer + data).slice(-MAX_BUFFER);
@@ -102,4 +138,31 @@ export function killSession(projectId: string, slotId: string) {
 
 export function killProjectSessions(project: Project) {
   for (const slot of project.slots) killSession(project.id, slot.id);
+}
+
+/** 작업 디스패치 기록 — 컨텍스트 누적 추적용 */
+export function recordTask(projectId: string, slotId: string, title: string) {
+  const s = getSession(projectId, slotId);
+  if (s) s.taskTitles.push(title);
+}
+
+export function getContexts(project: Project): SessionContext[] {
+  return project.slots.map((slot) => {
+    const s = getSession(project.id, slot.id);
+    return {
+      slotId: slot.id,
+      running: Boolean(s),
+      startedAt: s ? new Date(s.startedAt).toISOString() : null,
+      taskCount: s?.taskTitles.length ?? 0,
+      taskTitles: s?.taskTitles.slice(-5) ?? [],
+      // 서로 다른 작업이 2건 이상 쌓이면 이전 작업의 맥락이 새 작업에 섞일 수 있다
+      contextStale: (s?.taskTitles.length ?? 0) >= 2,
+    };
+  });
+}
+
+/** 컨텍스트를 비우고 CLI를 새로 띄운다 (이전 대화가 새 작업에 섞이지 않게) */
+export function restartSession(project: Project, slot: Slot, cols = 120, rows = 32): AgentSession {
+  killSession(project.id, slot.id);
+  return ensureSession(project, slot, cols, rows);
 }

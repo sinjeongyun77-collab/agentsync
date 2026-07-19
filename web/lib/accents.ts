@@ -9,6 +9,8 @@ export function cliAccent(cli: string): string {
       return "border-amber-800 text-amber-300";
     case "qwen":
       return "border-rose-800 text-rose-300";
+    case "kimi":
+      return "border-indigo-800 text-indigo-300";
     default:
       return "border-zinc-700 text-zinc-300";
   }

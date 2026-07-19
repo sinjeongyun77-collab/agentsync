@@ -19,6 +19,8 @@ export interface Project {
   repoPath: string;
   baseBranch: string;
   slots: Slot[];
+  /** 병합 전 실행할 검증 명령 (예: npm run typecheck) */
+  verifyCommands?: string[];
   createdAt: string;
 }
 
@@ -58,11 +60,12 @@ export interface NoteItem {
   createdAt: string;
 }
 
-export const MAX_SLOTS = 4;
+export const MAX_SLOTS = 6;
 
 export const CLI_PRESETS: Record<string, { label: string; command: string }> = {
   claude: { label: 'Claude Code', command: 'claude' },
   codex: { label: 'Codex', command: 'codex' },
   gemini: { label: 'Gemini CLI', command: 'gemini' },
   qwen: { label: 'Qwen Code', command: 'qwen' },
+  kimi: { label: 'Kimi Code', command: 'kimi' },
 };

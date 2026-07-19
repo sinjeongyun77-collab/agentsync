@@ -1,9 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, type DiffResult, type Project, type TaskItem } from "@/lib/api";
+import { api, type DiffResult, type Project, type SessionContext, type TaskItem, type VerifyResult } from "@/lib/api";
 import { cliAccent } from "@/lib/accents";
 import DiffView from "@/components/DiffView";
+import VerifyPanel from "@/components/VerifyPanel";
 
 export default function Kanban({
   project,
@@ -19,6 +20,7 @@ export default function Kanban({
   const [overCol, setOverCol] = useState<string | null>(null);
   const [arenaSetup, setArenaSetup] = useState<TaskItem | null>(null);
   const [arenaCompare, setArenaCompare] = useState<TaskItem | null>(null);
+  const [contexts, setContexts] = useState<SessionContext[]>([]);
 
   // 드래그 중 보드 가장자리에 가까워지면 자동 가로 스크롤 (먼 컬럼으로 한 번에 이동)
   const boardRef = useRef<HTMLDivElement | null>(null);
@@ -69,6 +71,13 @@ export default function Kanban({
     return () => clearInterval(t);
   }, [load]);
 
+  useEffect(() => {
+    const loadCtx = () => api.listContexts(project.id).then(setContexts).catch(() => {});
+    loadCtx();
+    const t = setInterval(loadCtx, 8000);
+    return () => clearInterval(t);
+  }, [project.id]);
+
   async function onCreate(e: React.FormEvent) {
     e.preventDefault();
     if (!title.trim()) return;
@@ -97,8 +106,20 @@ export default function Kanban({
       } else {
         // 슬롯 컬럼 → 디스패치 (세션에 프롬프트 주입)
         const slot = project.slots.find((s) => s.id === column);
-        showToast(`"${task.title}" → ${slot?.label ?? column} 디스패치 중…`);
-        const res = await api.dispatchTask(project.id, task.id, column);
+        const ctx = contexts.find((c) => c.slotId === column);
+        // 다른 작업이 이미 쌓인 세션이면 컨텍스트를 비우고 시작할지 확인
+        let fresh = false;
+        if (ctx?.contextStale) {
+          fresh = confirm(
+            `${slot?.label}에는 이미 작업 ${ctx.taskCount}건의 대화가 쌓여 있습니다.\n` +
+              `(${ctx.taskTitles.join(", ")})\n\n` +
+              `새 컨텍스트로 시작할까요?\n` +
+              `[확인] 깨끗한 세션에서 시작 (권장 — 이전 작업 맥락이 섞이지 않음)\n` +
+              `[취소] 기존 대화를 이어서 진행`,
+          );
+        }
+        showToast(`"${task.title}" → ${slot?.label ?? column} 디스패치 중…${fresh ? " (새 컨텍스트)" : ""}`);
+        const res = await api.dispatchTask(project.id, task.id, column, fresh);
         showToast(
           res.injected
             ? `"${task.title}" 카드를 ${slot?.label}에게 보냈습니다. 터미널 탭에서 확인하세요.`
@@ -372,6 +393,7 @@ function ArenaCompareModal({
     .map((sid) => project.slots.find((s) => s.id === sid))
     .filter((s): s is NonNullable<typeof s> => Boolean(s));
   const [diffs, setDiffs] = useState<Record<string, DiffResult | null>>({});
+  const [verifies, setVerifies] = useState<Record<string, VerifyResult | "loading">>({});
   const [resetLoser, setResetLoser] = useState(true);
   const [busy, setBusy] = useState(false);
 
@@ -385,14 +407,30 @@ function ArenaCompareModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project.id, task.id]);
 
+  async function verifyOne(slotId: string) {
+    setVerifies((p) => ({ ...p, [slotId]: "loading" }));
+    try {
+      const res = await api.verify(project.id, slotId);
+      setVerifies((p) => ({ ...p, [slotId]: res }));
+    } catch (e) {
+      showToast(`검증 실패: ${(e as Error).message}`);
+      setVerifies((p) => {
+        const next = { ...p };
+        delete next[slotId];
+        return next;
+      });
+    }
+  }
+
   async function adopt(slotId: string) {
     const label = project.slots.find((s) => s.id === slotId)?.label ?? slotId;
-    if (!confirm(`${label}의 결과를 채택해 ${project.baseBranch}에 병합할까요?${resetLoser ? "\n(패자의 작업물은 초기화됩니다)" : ""}`))
+    if (!confirm(`${label}의 결과를 채택해 ${project.baseBranch}에 병합할까요?\n(병합 전 검증이 자동 실행됩니다)${resetLoser ? "\n패자의 작업물은 초기화됩니다." : ""}`))
       return;
     setBusy(true);
     try {
       const res = await api.arenaWinner(project.id, task.id, slotId, resetLoser);
       showToast(res.message);
+      if (res.verify) setVerifies((p) => ({ ...p, [slotId]: res.verify! }));
       if (res.ok) onDecided();
     } catch (e) {
       showToast(`채택 실패: ${(e as Error).message}`);
@@ -430,14 +468,26 @@ function ArenaCompareModal({
                     </span>
                   )}
                   <button
+                    onClick={() => verifyOne(s.id)}
+                    disabled={busy || verifies[s.id] === "loading"}
+                    className="ml-auto rounded-md border border-sky-700 bg-sky-950/40 px-2 py-1 text-xs text-sky-300 transition hover:bg-sky-900/50 disabled:opacity-40"
+                  >
+                    {verifies[s.id] === "loading" ? "검증 중…" : "🔎 검증"}
+                  </button>
+                  <button
                     onClick={() => adopt(s.id)}
                     disabled={busy}
-                    className="ml-auto rounded-md bg-emerald-500 px-3 py-1 text-xs font-semibold text-zinc-950 transition hover:bg-emerald-400 disabled:opacity-40"
+                    className="rounded-md bg-emerald-500 px-3 py-1 text-xs font-semibold text-zinc-950 transition hover:bg-emerald-400 disabled:opacity-40"
                   >
                     🏆 이쪽 채택
                   </button>
                 </div>
                 <div className="min-h-0 flex-1 overflow-y-auto p-3">
+                  {verifies[s.id] && verifies[s.id] !== "loading" && (
+                    <div className="mb-3">
+                      <VerifyPanel result={verifies[s.id] as VerifyResult} />
+                    </div>
+                  )}
                   {d === undefined ? (
                     <p className="text-xs text-zinc-500">diff 불러오는 중…</p>
                   ) : d === null ? (

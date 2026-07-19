@@ -4,7 +4,18 @@ import websocket from '@fastify/websocket';
 import crypto from 'node:crypto';
 import { store } from './store.js';
 import { addSlot, createProjectFromRepo, getDiff, mergeSlotBranch, resetSlotWorktree, writeMcpConfig, GitError } from './gitService.js';
-import { ensureSession, killProjectSessions, killSession, resizeSession, writeToSession } from './sessionManager.js';
+import {
+  ensureSession,
+  getContexts,
+  killProjectSessions,
+  killSession,
+  recordTask,
+  resizeSession,
+  restartSession,
+  writeToSession,
+} from './sessionManager.js';
+import { installCli, listClis } from './cliManager.js';
+import { suggestVerifyCommands, verifySlot } from './verify.js';
 import { injectPrompt, performHandoff } from './handoff.js';
 import { MAX_SLOTS, type Project, type Slot, type TaskStatus } from './types.js';
 
@@ -50,6 +61,37 @@ app.delete<{ Params: { id: string } }>('/api/projects/:id', async (req, reply) =
   store.removeProject(project.id);
   // 워크트리는 의도적으로 디스크에 남긴다 — 에이전트 작업물 삭제는 사람이 직접
   return { ok: true };
+});
+
+// ---------- CLI 설치 관리 (비개발자용) ----------
+
+app.get('/api/clis', async () => listClis());
+
+/** 설치 진행 상황을 실시간으로 보여주기 위한 WebSocket */
+app.get<{ Querystring: { cli?: string } }>('/ws/install', { websocket: true }, (socket, req) => {
+  const cli = req.query.cli;
+  if (!cli) {
+    socket.send('설치할 CLI가 지정되지 않았습니다.');
+    socket.close();
+    return;
+  }
+  const handle = installCli(cli, {
+    onOutput: (chunk) => {
+      if (socket.readyState === socket.OPEN) socket.send(chunk);
+    },
+    onDone: (ok) => {
+      if (socket.readyState === socket.OPEN) {
+        socket.send(`\r\n__AGENTSYNC_DONE__:${ok ? 'ok' : 'fail'}`);
+        socket.close();
+      }
+    },
+  });
+  if (!handle) {
+    socket.send(`알 수 없는 CLI: ${cli}`);
+    socket.close();
+    return;
+  }
+  socket.on('close', () => handle.cancel());
 });
 
 // ---------- 슬롯 ----------
@@ -109,6 +151,63 @@ app.delete<{ Params: { id: string; slotId: string } }>(
   },
 );
 
+// ---------- 컨텍스트 격리 ----------
+
+app.get<{ Params: { id: string } }>('/api/projects/:id/contexts', async (req, reply) => {
+  const project = store.getProject(req.params.id);
+  if (!project) return reply.code(404).send({ error: '프로젝트를 찾을 수 없습니다.' });
+  return getContexts(project);
+});
+
+/** 세션을 새로 띄워 이전 대화 맥락을 비운다 */
+app.post<{ Params: { id: string; slotId: string } }>(
+  '/api/projects/:id/slots/:slotId/restart',
+  async (req, reply) => {
+    const project = store.getProject(req.params.id);
+    const slot = project && findSlot(project, req.params.slotId);
+    if (!project || !slot) return reply.code(404).send({ error: '슬롯을 찾을 수 없습니다.' });
+    restartSession(project, slot);
+    return { ok: true, message: `${slot.label} 세션을 새 컨텍스트로 재시작했습니다.` };
+  },
+);
+
+// ---------- 병합 검증 ----------
+
+app.get<{ Params: { id: string } }>('/api/projects/:id/verify-config', async (req, reply) => {
+  const project = store.getProject(req.params.id);
+  if (!project) return reply.code(404).send({ error: '프로젝트를 찾을 수 없습니다.' });
+  return {
+    commands: project.verifyCommands ?? [],
+    suggestions: suggestVerifyCommands(project.repoPath),
+  };
+});
+
+app.put<{ Params: { id: string }; Body: { commands?: string[] } }>(
+  '/api/projects/:id/verify-config',
+  async (req, reply) => {
+    const project = store.getProject(req.params.id);
+    if (!project) return reply.code(404).send({ error: '프로젝트를 찾을 수 없습니다.' });
+    const commands = (req.body?.commands ?? []).map((c) => String(c).trim()).filter(Boolean).slice(0, 6);
+    project.verifyCommands = commands;
+    store.persistNow();
+    return { ok: true, commands };
+  },
+);
+
+app.post<{ Params: { id: string; slotId: string }; Body: { runChecks?: boolean } }>(
+  '/api/projects/:id/verify/:slotId',
+  async (req, reply) => {
+    const project = store.getProject(req.params.id);
+    const slot = project && findSlot(project, req.params.slotId);
+    if (!project || !slot) return reply.code(404).send({ error: '슬롯을 찾을 수 없습니다.' });
+    try {
+      return await verifySlot(project, slot, { runChecks: req.body?.runChecks !== false });
+    } catch (e) {
+      return handleGitError(e, reply);
+    }
+  },
+);
+
 // ---------- Diff / 병합 ----------
 
 app.get<{ Params: { id: string; slotId: string } }>('/api/projects/:id/diff/:slotId', async (req, reply) => {
@@ -122,16 +221,32 @@ app.get<{ Params: { id: string; slotId: string } }>('/api/projects/:id/diff/:slo
   }
 });
 
-app.post<{ Params: { id: string }; Body: { slotId?: string } }>('/api/projects/:id/merge', async (req, reply) => {
-  const project = store.getProject(req.params.id);
-  const slot = project && req.body?.slotId ? findSlot(project, req.body.slotId) : undefined;
-  if (!project || !slot) return reply.code(404).send({ error: '슬롯을 찾을 수 없습니다.' });
-  try {
-    return await mergeSlotBranch(project, slot);
-  } catch (e) {
-    return handleGitError(e, reply);
-  }
-});
+app.post<{ Params: { id: string }; Body: { slotId?: string; skipVerify?: boolean } }>(
+  '/api/projects/:id/merge',
+  async (req, reply) => {
+    const project = store.getProject(req.params.id);
+    const slot = project && req.body?.slotId ? findSlot(project, req.body.slotId) : undefined;
+    if (!project || !slot) return reply.code(404).send({ error: '슬롯을 찾을 수 없습니다.' });
+    try {
+      // 검증 없이 병합하면 충돌·깨진 빌드가 base로 들어간다 — 기본은 검증 필수
+      if (!req.body?.skipVerify) {
+        const verdict = await verifySlot(project, slot);
+        if (!verdict.ok) {
+          return {
+            ok: false,
+            message: verdict.mergeable
+              ? '검증 실패로 병합을 중단했습니다. 검증 결과를 확인하세요.'
+              : `병합 충돌이 예상돼 중단했습니다 (${verdict.conflicts.length}개 파일).`,
+            verify: verdict,
+          };
+        }
+      }
+      return await mergeSlotBranch(project, slot);
+    } catch (e) {
+      return handleGitError(e, reply);
+    }
+  },
+);
 
 // ---------- 핸드오프 ----------
 
@@ -179,7 +294,7 @@ app.post<{ Params: { id: string }; Body: { title?: string; description?: string 
 );
 
 /** 카드 드래그 → 슬롯 배정 + 세션에 프롬프트 주입 */
-app.post<{ Params: { id: string; taskId: string }; Body: { slotId?: string } }>(
+app.post<{ Params: { id: string; taskId: string }; Body: { slotId?: string; freshContext?: boolean } }>(
   '/api/projects/:id/tasks/:taskId/dispatch',
   async (req, reply) => {
     const project = store.getProject(req.params.id);
@@ -193,16 +308,20 @@ app.post<{ Params: { id: string; taskId: string }; Body: { slotId?: string } }>(
     task.dispatchedAt = new Date().toISOString();
     store.persistNow();
 
+    // 이전 작업 맥락이 새 작업에 섞이지 않도록 요청 시 세션을 새로 띄운다
+    if (req.body?.freshContext) restartSession(project, slot);
+
     const rolePart = slot.role && slot.role !== '자유' ? ` (너의 역할: ${slot.role})` : '';
     const desc = task.description ? ` 상세: ${task.description}` : '';
     const prompt = `[AgentSync 작업 카드] "${task.title}"${desc}${rolePart} — 이 작업을 진행해줘. 완료하면 결과를 요약해줘.`;
     const injected = await injectPrompt(project, slot, prompt);
+    recordTask(project.id, slot.id, task.title);
     return { task, injected };
   },
 );
 
 /** 아레나 시작: 같은 작업을 두 슬롯에 동시에 디스패치 */
-app.post<{ Params: { id: string; taskId: string }; Body: { slotIds?: string[] } }>(
+app.post<{ Params: { id: string; taskId: string }; Body: { slotIds?: string[]; freshContext?: boolean } }>(
   '/api/projects/:id/tasks/:taskId/arena',
   async (req, reply) => {
     const project = store.getProject(req.params.id);
@@ -223,15 +342,18 @@ app.post<{ Params: { id: string; taskId: string }; Body: { slotIds?: string[] } 
     const desc = task.description ? ` 상세: ${task.description}` : '';
     const results: boolean[] = [];
     for (const slot of slots) {
+      // 공정한 대결을 위해 양쪽 모두 깨끗한 컨텍스트에서 시작 (기본값)
+      if (req.body?.freshContext !== false) restartSession(project, slot);
       const prompt = `[AgentSync 아레나] "${task.title}"${desc} — 다른 에이전트도 같은 작업을 독립적으로 수행 중이야. 상의 없이 너만의 최선의 구현을 해줘. 완료하면 결과를 요약해줘.`;
       results.push(await injectPrompt(project, slot, prompt));
+      recordTask(project.id, slot.id, task.title);
     }
     return { task, injected: results };
   },
 );
 
 /** 아레나 승자 채택: 승자 브랜치 병합, 패자 워크트리는 선택적으로 초기화 */
-app.post<{ Params: { id: string; taskId: string }; Body: { slotId?: string; resetLoser?: boolean } }>(
+app.post<{ Params: { id: string; taskId: string }; Body: { slotId?: string; resetLoser?: boolean; skipVerify?: boolean } }>(
   '/api/projects/:id/tasks/:taskId/arena/winner',
   async (req, reply) => {
     const project = store.getProject(req.params.id);
@@ -244,6 +366,18 @@ app.post<{ Params: { id: string; taskId: string }; Body: { slotId?: string; rese
       return reply.code(400).send({ error: '승자는 아레나 참가 슬롯이어야 합니다.' });
     }
     try {
+      if (!req.body?.skipVerify) {
+        const verdict = await verifySlot(project, winner);
+        if (!verdict.ok) {
+          return {
+            ok: false,
+            message: verdict.mergeable
+              ? '승자 코드가 검증을 통과하지 못해 채택을 중단했습니다.'
+              : `승자 코드에 병합 충돌이 예상돼 중단했습니다 (${verdict.conflicts.length}개 파일).`,
+            verify: verdict,
+          };
+        }
+      }
       const merge = await mergeSlotBranch(project, winner);
       if (!merge.ok) return { ok: false, message: merge.message };
 

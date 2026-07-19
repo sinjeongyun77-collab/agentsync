@@ -4,10 +4,20 @@ import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import dynamic from "next/dynamic";
-import { api, type DiffResult, type HandoffRecord, type Project, type Slot } from "@/lib/api";
+import {
+  api,
+  type DiffResult,
+  type HandoffRecord,
+  type Project,
+  type SessionContext,
+  type Slot,
+  type VerifyResult,
+} from "@/lib/api";
 import { cliAccent } from "@/lib/accents";
 import Kanban from "@/components/Kanban";
 import DiffView from "@/components/DiffView";
+import CliInstaller from "@/components/CliInstaller";
+import VerifyPanel from "@/components/VerifyPanel";
 
 const Terminal = dynamic(() => import("@/components/Terminal"), { ssr: false });
 
@@ -18,6 +28,7 @@ const CLI_OPTIONS = [
   { value: "codex", label: "Codex" },
   { value: "gemini", label: "Gemini CLI (무료 한도)" },
   { value: "qwen", label: "Qwen Code (무료 한도)" },
+  { value: "kimi", label: "Kimi Code (K3)" },
   { value: "custom", label: "커스텀 명령… (opencode, aider 등)" },
 ];
 
@@ -66,6 +77,8 @@ export default function ProjectPage() {
     initial: string;
     onSubmit: (value: string) => void;
   } | null>(null);
+  const [showInstaller, setShowInstaller] = useState(false);
+  const [contexts, setContexts] = useState<SessionContext[]>([]);
 
   const refresh = useCallback(() => {
     return api
@@ -81,6 +94,26 @@ export default function ProjectPage() {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  // 컨텍스트 누적 상태를 주기적으로 확인 (오염 경고용)
+  useEffect(() => {
+    const load = () => api.listContexts(id).then(setContexts).catch(() => {});
+    load();
+    const t = setInterval(load, 8000);
+    return () => clearInterval(t);
+  }, [id]);
+
+  async function onRestartSlot(slot: Slot) {
+    if (!confirm(`${slot.label} 세션을 새 컨텍스트로 재시작할까요?\n(진행 중인 대화 맥락이 비워집니다. 작업 파일은 그대로예요)`))
+      return;
+    try {
+      const res = await api.restartSlot(id, slot.id);
+      showToast(res.message);
+      setTimeout(() => api.listContexts(id).then(setContexts).catch(() => {}), 1000);
+    } catch (e) {
+      showToast(`재시작 실패: ${(e as Error).message}`);
+    }
+  }
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -176,7 +209,14 @@ export default function ProjectPage() {
         </Link>
         <h1 className="font-semibold">{project.name}</h1>
         <span className="text-xs text-zinc-500">base: {project.baseBranch}</span>
-        <nav className="ml-auto flex gap-1 rounded-lg bg-zinc-900 p-1 text-sm">
+        <button
+          onClick={() => setShowInstaller(true)}
+          className="ml-auto rounded-md border border-zinc-700 px-3 py-1 text-xs text-zinc-300 transition hover:border-zinc-500"
+          title="에이전트 CLI를 클릭 한 번으로 설치"
+        >
+          ⬇ 에이전트 설치
+        </button>
+        <nav className="flex gap-1 rounded-lg bg-zinc-900 p-1 text-sm">
           {(["terminals", "kanban", "diff"] as const).map((t) => (
             <button
               key={t}
@@ -203,6 +243,7 @@ export default function ProjectPage() {
       >
         {project.slots.map((slot) => {
           const others = project.slots.filter((s) => s.id !== slot.id);
+          const ctx = contexts.find((c) => c.slotId === slot.id);
           return (
             <section key={slot.id} className="flex min-h-0 min-w-0 flex-col bg-zinc-950">
               <div className="flex items-center gap-2 border-b border-zinc-800 bg-zinc-900/60 px-3 py-1.5">
@@ -224,6 +265,19 @@ export default function ProjectPage() {
                     })
                   }
                 />
+                {ctx && ctx.taskCount > 0 && (
+                  <button
+                    onClick={() => onRestartSlot(slot)}
+                    className={`rounded px-1.5 py-0.5 text-[10px] transition ${
+                      ctx.contextStale
+                        ? "border border-amber-800 bg-amber-950/40 text-amber-300 hover:bg-amber-900/50"
+                        : "text-zinc-600 hover:text-zinc-300"
+                    }`}
+                    title={`이 세션에서 처리한 작업: ${ctx.taskTitles.join(", ")}\n클릭하면 컨텍스트를 비우고 새 세션으로 재시작합니다.`}
+                  >
+                    {ctx.contextStale ? `⚠ 작업 ${ctx.taskCount}건 누적 · 초기화` : `작업 ${ctx.taskCount}건`}
+                  </button>
+                )}
                 <div className="ml-auto flex items-center gap-1.5">
                   {others.length === 1 ? (
                     <button
@@ -265,7 +319,7 @@ export default function ProjectPage() {
             </section>
           );
         })}
-        {slotCount < 4 && (
+        {slotCount < 6 && (
           <section className="flex min-h-0 items-center justify-center bg-zinc-950">
             <select
               value=""
@@ -273,7 +327,7 @@ export default function ProjectPage() {
               onChange={(e) => onAddSlot(e.target.value)}
               className="rounded-lg border border-dashed border-zinc-700 bg-zinc-900 px-4 py-2.5 text-sm text-zinc-400 outline-none transition hover:border-zinc-500 hover:text-zinc-200"
             >
-              <option value="">+ 에이전트 슬롯 추가 (최대 4개)</option>
+              <option value="">+ 에이전트 슬롯 추가 (최대 6개)</option>
               {CLI_OPTIONS.map((c) => (
                 <option key={c.value} value={c.value}>
                   {c.label}
@@ -286,6 +340,13 @@ export default function ProjectPage() {
 
       {tab === "kanban" && <Kanban project={project} showToast={showToast} />}
       {tab === "diff" && <DiffTab project={project} showToast={showToast} />}
+
+      {showInstaller && (
+        <CliInstaller
+          onClose={() => setShowInstaller(false)}
+          onInstalled={() => showToast("설치 완료! 슬롯을 추가한 뒤 터미널에서 로그인하세요.")}
+        />
+      )}
 
       {textModal && (
         <TextInputModal
@@ -300,6 +361,117 @@ export default function ProjectPage() {
         />
       )}
     </main>
+  );
+}
+
+/** 병합 전 실행할 검증 명령 설정 (package.json 스크립트 자동 추천) */
+function VerifySettingsModal({
+  project,
+  onClose,
+  showToast,
+}: {
+  project: Project;
+  onClose: () => void;
+  showToast: (m: string) => void;
+}) {
+  const [commands, setCommands] = useState<string[]>([]);
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [input, setInput] = useState("");
+
+  useEffect(() => {
+    api
+      .getVerifyConfig(project.id)
+      .then((c) => {
+        setCommands(c.commands);
+        setSuggestions(c.suggestions);
+      })
+      .catch(() => {});
+  }, [project.id]);
+
+  async function save(next: string[]) {
+    setCommands(next);
+    try {
+      await api.setVerifyConfig(project.id, next);
+    } catch (e) {
+      showToast(`저장 실패: ${(e as Error).message}`);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onClose}>
+      <div
+        className="w-[30rem] max-w-[90vw] rounded-xl border border-zinc-700 bg-zinc-900 p-5 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2 className="text-sm font-semibold text-zinc-200">병합 전 검증 명령</h2>
+        <p className="mt-1 text-xs text-zinc-500">
+          병합 직전에 에이전트의 워크트리에서 실행됩니다. 하나라도 실패하면 병합이 차단돼요.
+        </p>
+
+        <ul className="mt-3 space-y-1">
+          {commands.map((c) => (
+            <li key={c} className="flex items-center gap-2 rounded-md border border-zinc-800 bg-zinc-950 px-3 py-1.5">
+              <code className="flex-1 text-xs text-zinc-300">{c}</code>
+              <button
+                onClick={() => save(commands.filter((x) => x !== c))}
+                className="text-xs text-zinc-600 hover:text-red-400"
+              >
+                제거
+              </button>
+            </li>
+          ))}
+          {commands.length === 0 && (
+            <li className="rounded-md border border-dashed border-zinc-800 px-3 py-3 text-center text-xs text-zinc-600">
+              설정된 명령이 없습니다 (충돌 검사만 수행)
+            </li>
+          )}
+        </ul>
+
+        {suggestions.filter((s) => !commands.includes(s)).length > 0 && (
+          <div className="mt-3">
+            <p className="text-[11px] text-zinc-500">이 프로젝트에서 발견한 명령</p>
+            <div className="mt-1 flex flex-wrap gap-1.5">
+              {suggestions
+                .filter((s) => !commands.includes(s))
+                .map((s) => (
+                  <button
+                    key={s}
+                    onClick={() => save([...commands, s])}
+                    className="rounded-md border border-sky-800 bg-sky-950/40 px-2 py-1 text-[11px] text-sky-300 hover:bg-sky-900/50"
+                  >
+                    + {s}
+                  </button>
+                ))}
+            </div>
+          </div>
+        )}
+
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (input.trim()) {
+              save([...commands, input.trim()]);
+              setInput("");
+            }
+          }}
+          className="mt-3 flex gap-2"
+        >
+          <input
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="직접 입력 (예: npm test)"
+            className="flex-1 rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-1.5 text-xs outline-none placeholder:text-zinc-600 focus:border-emerald-500"
+          />
+          <button className="rounded-lg bg-zinc-700 px-3 py-1.5 text-xs text-zinc-100 hover:bg-zinc-600">추가</button>
+        </form>
+
+        <div className="mt-4 flex justify-end">
+          <button onClick={onClose} className="rounded-lg bg-emerald-500 px-4 py-1.5 text-sm font-semibold text-zinc-950 hover:bg-emerald-400">
+            완료
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -365,6 +537,9 @@ function DiffTab({ project, showToast }: { project: Project; showToast: (m: stri
   const [handoffs, setHandoffs] = useState<HandoffRecord[]>([]);
   const [loading, setLoading] = useState(false);
   const [merging, setMerging] = useState(false);
+  const [verifying, setVerifying] = useState(false);
+  const [verifyResult, setVerifyResult] = useState<VerifyResult | null>(null);
+  const [showVerifySettings, setShowVerifySettings] = useState(false);
 
   const load = useCallback(() => {
     if (!slotId) return;
@@ -381,13 +556,45 @@ function DiffTab({ project, showToast }: { project: Project; showToast: (m: stri
 
   const slot = project.slots.find((s) => s.id === slotId);
 
+  async function onVerify() {
+    if (!slot) return;
+    setVerifying(true);
+    setVerifyResult(null);
+    showToast(`${slot.label} 검증 중… (충돌 예측 + 프로젝트 검증 명령 실행)`);
+    try {
+      const res = await api.verify(project.id, slotId);
+      setVerifyResult(res);
+      showToast(res.ok ? "✅ 검증 통과 — 병합해도 안전합니다." : "⚠️ 검증 실패 — 결과를 확인하세요.");
+    } catch (e) {
+      showToast(`검증 실패: ${(e as Error).message}`);
+    } finally {
+      setVerifying(false);
+    }
+  }
+
   async function onMerge() {
     if (!slot) return;
-    if (!confirm(`${slot.label}의 브랜치를 ${project.baseBranch}에 병합할까요?\n(커밋되지 않은 변경도 자동 커밋됩니다)`))
-      return;
+    if (!confirm(`${slot.label}의 브랜치를 ${project.baseBranch}에 병합할까요?\n(병합 전 검증이 자동 실행됩니다)`)) return;
     setMerging(true);
     try {
       const res = await api.merge(project.id, slotId);
+      showToast(res.message);
+      if (res.verify) setVerifyResult(res.verify);
+      if (res.ok) setVerifyResult(null);
+      load();
+    } catch (e) {
+      showToast(`병합 실패: ${(e as Error).message}`);
+    } finally {
+      setMerging(false);
+    }
+  }
+
+  async function onForceMerge() {
+    if (!slot) return;
+    if (!confirm(`검증을 건너뛰고 강제로 병합할까요?\n충돌이나 깨진 코드가 ${project.baseBranch}에 들어갈 수 있습니다.`)) return;
+    setMerging(true);
+    try {
+      const res = await api.merge(project.id, slotId, true);
       showToast(res.message);
       load();
     } catch (e) {
@@ -417,13 +624,49 @@ function DiffTab({ project, showToast }: { project: Project; showToast: (m: stri
           새로고침
         </button>
         <button
+          onClick={() => setShowVerifySettings(true)}
+          className="text-xs text-zinc-500 hover:text-zinc-300"
+          title="병합 전 실행할 검증 명령 설정"
+        >
+          검증 설정
+        </button>
+        <button
+          onClick={onVerify}
+          disabled={verifying || !slot}
+          className="ml-auto rounded-md border border-sky-700 bg-sky-950/40 px-3 py-1.5 text-sm text-sky-300 transition hover:bg-sky-900/50 disabled:opacity-50"
+        >
+          {verifying ? "검증 중…" : "🔎 병합 전 검증"}
+        </button>
+        <button
           onClick={onMerge}
           disabled={merging || !slot}
-          className="ml-auto rounded-md bg-emerald-500 px-4 py-1.5 text-sm font-semibold text-zinc-950 transition hover:bg-emerald-400 disabled:opacity-50"
+          className="rounded-md bg-emerald-500 px-4 py-1.5 text-sm font-semibold text-zinc-950 transition hover:bg-emerald-400 disabled:opacity-50"
         >
           {merging ? "병합 중…" : `${project.baseBranch}에 병합`}
         </button>
       </div>
+
+      {verifyResult && (
+        <div>
+          <VerifyPanel result={verifyResult} />
+          {!verifyResult.ok && (
+            <button
+              onClick={onForceMerge}
+              className="mt-2 text-[11px] text-zinc-600 underline hover:text-red-400"
+            >
+              위험을 감수하고 강제 병합
+            </button>
+          )}
+        </div>
+      )}
+
+      {showVerifySettings && (
+        <VerifySettingsModal
+          project={project}
+          onClose={() => setShowVerifySettings(false)}
+          showToast={showToast}
+        />
+      )}
 
       {loading ? (
         <p className="text-sm text-zinc-500">diff 불러오는 중…</p>
